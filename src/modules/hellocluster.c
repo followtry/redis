@@ -2,35 +2,13 @@
  *
  * -----------------------------------------------------------------------------
  *
- * Copyright (c) 2018, Salvatore Sanfilippo <antirez at gmail dot com>
+ * Copyright (c) 2018-Present, Redis Ltd.
  * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- *   * Redistributions of source code must retain the above copyright notice,
- *     this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *   * Neither the name of Redis nor the names of its contributors may be used
- *     to endorse or promote products derived from this software without
- *     specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
+ * Licensed under your choice of the Redis Source Available License 2.0
+ * (RSALv2) or the Server Side Public License v1 (SSPLv1).
  */
 
-#define REDISMODULE_EXPERIMENTAL_API
 #include "../redismodule.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,7 +23,7 @@ int PingallCommand_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, i
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
 
-    RedisModule_SendClusterMessage(ctx,NULL,MSGTYPE_PING,(unsigned char*)"Hey",3);
+    RedisModule_SendClusterMessage(ctx,NULL,MSGTYPE_PING,"Hey",3);
     return RedisModule_ReplyWithSimpleString(ctx, "OK");
 }
 
@@ -69,14 +47,16 @@ int ListCommand_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int 
         RedisModule_ReplyWithLongLong(ctx,port);
     }
     RedisModule_FreeClusterNodesList(ids);
-    return RedisModule_ReplyWithSimpleString(ctx, "OK");
+    return REDISMODULE_OK;
 }
 
 /* Callback for message MSGTYPE_PING */
 void PingReceiver(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, const unsigned char *payload, uint32_t len) {
     RedisModule_Log(ctx,"notice","PING (type %d) RECEIVED from %.*s: '%.*s'",
         type,REDISMODULE_NODE_ID_LEN,sender_id,(int)len, payload);
-    RedisModule_SendClusterMessage(ctx,NULL,MSGTYPE_PONG,(unsigned char*)"Ohi!",4);
+    RedisModule_SendClusterMessage(ctx,NULL,MSGTYPE_PONG,"Ohi!",4);
+    RedisModuleCallReply *reply = RedisModule_Call(ctx, "INCR", "c", "pings_received");
+    RedisModule_FreeCallReply(reply);
 }
 
 /* Callback for message MSGTYPE_PONG. */
@@ -102,6 +82,15 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
         ListCommand_RedisCommand,"readonly",0,0,0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
 
+    /* Disable Redis Cluster sharding and redirections. This way every node
+     * will be able to access every possible key, regardless of the hash slot.
+     * This way the PING message handler will be able to increment a specific
+     * variable. Normally you do that in order for the distributed system
+     * you create as a module to have total freedom in the keyspace
+     * manipulation. */
+    RedisModule_SetClusterFlags(ctx,REDISMODULE_CLUSTER_FLAG_NO_REDIRECTION);
+
+    /* Register our handlers for different message types. */
     RedisModule_RegisterClusterMessageReceiver(ctx,MSGTYPE_PING,PingReceiver);
     RedisModule_RegisterClusterMessageReceiver(ctx,MSGTYPE_PONG,PongReceiver);
     return REDISMODULE_OK;
